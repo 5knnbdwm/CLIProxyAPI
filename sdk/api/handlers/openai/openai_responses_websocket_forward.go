@@ -72,7 +72,6 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 		keepAliveC = keepAliveTicker.C
 	}
 	if opts.localInterrupt != nil {
-		opts.localInterrupt.begin()
 		defer opts.localInterrupt.end()
 	}
 	localFrames := opts.localInterrupt.framesChan()
@@ -162,6 +161,7 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 			for i := range payloads {
 				if gjson.GetBytes(payloads[i], "type").String() == "response.created" {
 					responseStarted = true
+					opts.localInterrupt.begin(gjson.GetBytes(payloads[i], "response.id").String())
 					completed = false
 					outputItemsByIndex = make(map[int64][]byte)
 					outputItemsFallback = nil
@@ -196,6 +196,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocket(
 					// response.incomplete ends the turn too. Codex uses it, with
 					// reason "interrupted", to acknowledge response.interrupt. Closing
 					// the client socket here would block the follow-up request.
+					// Clear local cancellation before the client can observe completion.
+					opts.localInterrupt.end()
 					completed = true
 					completedOutput = responseCompletedOutputFromPayload(payloads[i], outputItemsByIndex, outputItemsFallback)
 					completedResponseID = responseCompletedIDFromPayload(payloads[i])
@@ -267,11 +269,12 @@ func completeResponsesWebsocketLocalInterrupt(
 		cancel(errSet)
 		return output, responseID, sortedStringSet(pendingToolCallIDs), nil, errSet
 	}
+	// Cancel the upstream turn before acknowledging the interrupt downstream.
+	cancel(context.Canceled)
 	if errWrite := writeResponsesWebsocketPayload(writer, wsTimelineLog, incomplete, time.Now()); errWrite != nil {
 		cancel(errWrite)
 		return output, responseID, sortedStringSet(pendingToolCallIDs), nil, errWrite
 	}
-	cancel(context.Canceled)
 	return output, responseID, sortedStringSet(pendingToolCallIDs), nil, nil
 }
 
